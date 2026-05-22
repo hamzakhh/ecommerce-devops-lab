@@ -2,7 +2,8 @@
 - name: Deploy E-Commerce Application
   hosts: web
   become: yes
-  gather_facts: no
+  gather_facts: no          # ← RESTER À no jusqu'à avoir Python + swap
+
   vars:
     ansible_python_interpreter: /usr/bin/python3
     app_dir: /opt/ecommerce
@@ -10,65 +11,56 @@
 
   tasks:
 
-    # ─────────────────────────────────────────
-    # 0. Swap (fix mémoire insuffisante)
-    # ─────────────────────────────────────────
-    - name: Check if swap already exists
-      command: swapon --show
-      register: swap_check
-      changed_when: false
+    # ═══════════════════════════════════════════════════
+    # PHASE 1 : RAW uniquement (aucun Python requis)
+    # ═══════════════════════════════════════════════════
+    
+    - name: "[1/10] Installer Python3 si manquant"
+      raw: |
+        if ! command -v python3 &> /dev/null; then
+          dnf install -y python3 python3-pip
+        fi
+        python3 --version
+      args:
+        executable: /bin/bash
 
-    - name: Create swap file (1GB)
-      command: dd if=/dev/zero of=/swapfile bs=128M count=8
-      when: swap_check.stdout == ""
+    - name: "[2/10] Créer le swap (4 Go)"
+      raw: |
+        if ! swapon --show | grep -q /swapfile; then
+          dd if=/dev/zero of=/swapfile bs=256M count=16
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          grep -q /swapfile /etc/fstab || echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+        fi
+        echo "=== MEMOIRE ==="
+        free -h
+        echo "==============="
+      args:
+        executable: /bin/bash
 
-    - name: Set swap permissions
-      file:
-        path: /swapfile
-        mode: '0600'
-      when: swap_check.stdout == ""
-
-    - name: Format swap
-      command: mkswap /swapfile
-      when: swap_check.stdout == ""
-
-    - name: Enable swap
-      command: swapon /swapfile
-      when: swap_check.stdout == ""
-
-    - name: Persist swap in fstab
-      lineinfile:
-        path: /etc/fstab
-        line: '/swapfile swap swap defaults 0 0'
-        state: present
-
-    # ─────────────────────────────────────────
-    # 0b. Gather facts APRÈS création du swap
-    # ─────────────────────────────────────────
-    - name: Gather facts
+    # ═══════════════════════════════════════════════════
+    # PHASE 2 : Maintenant on peut utiliser Python
+    # ═══════════════════════════════════════════════════
+    
+    - name: "[3/10] Gather facts"
       setup:
 
-    # ─────────────────────────────────────────
-    # 1. Prérequis système
-    # ─────────────────────────────────────────
-    - name: Install required system packages
-      yum:
+    - name: "[4/10] Installer packages système"
+      dnf:                      # ← dnf, pas yum (Amazon Linux 2023)
         name:
           - curl
           - gnupg2
           - python3-pip
         state: present
 
-    # ─────────────────────────────────────────
-    # 2. Installation Docker
-    # ─────────────────────────────────────────
-    - name: Install Docker via amazon-linux-extras or yum
+    - name: "[5/10] Installer Docker"
       shell: |
-        amazon-linux-extras install docker -y || yum install docker -y
+        dnf install -y docker
       args:
         creates: /usr/bin/docker
 
-    - name: Install Docker Compose (standalone)
+    - name: "[6/10] Installer Docker Compose"
       shell: |
         curl -SL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
           -o /usr/local/bin/docker-compose
@@ -76,27 +68,39 @@
       args:
         creates: /usr/local/bin/docker-compose
 
-    - name: Install docker Python SDK
+    - name: "[7/10] Installer SDK Python Docker"
       pip:
         name: docker
         state: present
 
-    - name: Start and enable Docker service
+    - name: "[8/10] Démarrer Docker"
       systemd:
         name: docker
         state: started
         enabled: yes
 
-    - name: Add ec2-user to docker group
+    - name: "[8b/10] Ajouter ec2-user au groupe docker"
       user:
         name: ec2-user
         groups: docker
         append: yes
 
-    # ─────────────────────────────────────────
-    # 3. Préparer le répertoire de l'application
-    # ─────────────────────────────────────────
-    - name: Create application directory
+    # ═══════════════════════════════════════════════════
+    # PHASE 3 : Déployer l'application
+    # ═══════════════════════════════════════════════════
+    
+    - name: "[9/10] Copier les fichiers de config"
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+      loop:
+        - { src: docker-compose.yml, dest: "{{ compose_file }}" }
+        - { src: nginx.conf, dest: "{{ app_dir }}/nginx.conf" }
+
+    - name: "[9b/10] Créer le répertoire application"
       file:
         path: "{{ app_dir }}"
         state: directory
@@ -104,42 +108,24 @@
         group: ec2-user
         mode: '0755'
 
-    - name: Copy docker-compose.yml to server
-      copy:
-        src: docker-compose.yml
-        dest: "{{ compose_file }}"
-        owner: ec2-user
-        group: ec2-user
-        mode: '0644'
-
-    - name: Copy nginx.conf to server
-      copy:
-        src: nginx.conf
-        dest: "{{ app_dir }}/nginx.conf"
-        owner: ec2-user
-        group: ec2-user
-        mode: '0644'
-
-    # ─────────────────────────────────────────
-    # 4. Démarrer les conteneurs
-    # ─────────────────────────────────────────
-    - name: Pull and start containers via Docker Compose
+    - name: "[10/10] Démarrer les conteneurs"
       shell: |
         docker-compose -f {{ compose_file }} pull
         docker-compose -f {{ compose_file }} up -d
       become_user: ec2-user
 
-    # ─────────────────────────────────────────
-    # 5. Vérifications (HealthChecks)
-    # ─────────────────────────────────────────
-    - name: Wait for port 80 to be reachable
+    # ═══════════════════════════════════════════════════
+    # PHASE 4 : Vérifications
+    # ═══════════════════════════════════════════════════
+    
+    - name: "Vérifier port 80"
       wait_for:
         host: "{{ inventory_hostname }}"
         port: 80
         delay: 5
         timeout: 60
 
-    - name: Check app HTTP response
+    - name: "Vérifier réponse HTTP"
       uri:
         url: "http://{{ inventory_hostname }}/"
         return_content: yes
