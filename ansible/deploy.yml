@@ -3,6 +3,7 @@
   hosts: web
   become: yes
   vars:
+    ansible_python_interpreter: /usr/bin/python3
     app_dir: /opt/ecommerce
     compose_file: "{{ app_dir }}/docker-compose.yml"
 
