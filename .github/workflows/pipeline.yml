@@ -30,11 +30,18 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            us-east-1
+
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
 
-      - run: terraform init
+      - name: Terraform Init
+        run: |
+          terraform init \
+          -backend-config="bucket=ecommerce-tfstate-hamzakhh" \
+          -backend-config="key=prod/terraform.tfstate" \
+          -backend-config="region=us-east-1"
+
       - run: terraform validate
       - run: terraform plan -out=tfplan
       - run: terraform apply -auto-approve tfplan
@@ -47,12 +54,6 @@ jobs:
           ALB=$(terraform output -raw alb_dns_name)
           echo "instance_ips=$IPS" >> $GITHUB_OUTPUT
           echo "alb_dns=$ALB"      >> $GITHUB_OUTPUT
-      - name: Terraform Init
-        run: |
-         terraform init \
-         -backend-config="bucket=ecommerce-tfstate-hamzakhh" \
-         -backend-config="key=prod/terraform.tfstate" \
-         -backend-config="region=us-east-1"
 
   # ─────────────────────────────────────────
   # JOB 2 — Ansible
@@ -72,10 +73,12 @@ jobs:
           ansible-galaxy collection install community.docker
           pip install boto3 --quiet
 
+      # ✅ Un seul step SSH Key, nom correct
       - name: Setup SSH Key
         run: |
-          echo "${{ secrets.EC2_KEY }}" > key.pem
+          echo "${{ secrets.EC2_PRIVATE_KEY }}" | tr -d '\r' > key.pem
           chmod 600 key.pem
+          ssh-keygen -y -f key.pem > /dev/null || (echo "❌ Invalid key format" && exit 1)
 
       - name: Generate Inventory
         run: |
@@ -101,18 +104,11 @@ jobs:
           ANSIBLE_HOST_KEY_CHECKING: "False"
           ANSIBLE_TIMEOUT: "60"
 
-      - name: Cleanup SSH Key        # ← sécurité
+      - name: Cleanup SSH Key
         if: always()
         run: rm -f key.pem
 
       - run: echo "🚀 http://${{ needs.terraform.outputs.alb_dns }}"
-    # Dans pipeline.yml → job "ansible" → step "Setup SSH Key"
-
-      - name: Setup SSH Key
-        run: |
-         echo "${{ secrets.EC2_KEY }}" | tr -d '\r' > key.pem
-         chmod 600 key.pem
-         ssh-keygen -y -f key.pem > /dev/null || (echo "❌ Invalid key format" && exit 1)
 
   # ─────────────────────────────────────────
   # JOB 3 — Destroy (manuel)
@@ -121,7 +117,7 @@ jobs:
     name: Destroy Infrastructure
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
-    needs: [terraform]   # ← corrigé
+    needs: [terraform]
     defaults:
       run:
         working-directory: terraform
@@ -137,17 +133,18 @@ jobs:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region:            ${{ secrets.AWS_REGION }}
+          aws-region:            us-east-1        # ✅ hardcodé, plus de secrets.AWS_REGION
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
 
-      - run: terraform init
-      - run: terraform destroy -auto-approve
+      # ✅ Un seul terraform init avec backend-config
       - name: Terraform Init
         run: |
-         terraform init \
-         -backend-config="bucket=ecommerce-tfstate-hamzakhh" \
-         -backend-config="key=prod/terraform.tfstate" \
-         -backend-config="region=us-east-1"
+          terraform init \
+          -backend-config="bucket=ecommerce-tfstate-hamzakhh" \
+          -backend-config="key=prod/terraform.tfstate" \
+          -backend-config="region=us-east-1"
+
+      - run: terraform destroy -auto-approve
