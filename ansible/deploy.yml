@@ -10,6 +10,38 @@
   tasks:
 
     # ─────────────────────────────────────────
+    # 0. Swap (fix mémoire insuffisante)
+    # ─────────────────────────────────────────
+    - name: Check if swap already exists
+      command: swapon --show
+      register: swap_check
+      changed_when: false
+
+    - name: Create swap file (1GB)
+      command: dd if=/dev/zero of=/swapfile bs=128M count=8
+      when: swap_check.stdout == ""
+
+    - name: Set swap permissions
+      file:
+        path: /swapfile
+        mode: '0600'
+      when: swap_check.stdout == ""
+
+    - name: Format swap
+      command: mkswap /swapfile
+      when: swap_check.stdout == ""
+
+    - name: Enable swap
+      command: swapon /swapfile
+      when: swap_check.stdout == ""
+
+    - name: Persist swap in fstab
+      lineinfile:
+        path: /etc/fstab
+        line: '/swapfile swap swap defaults 0 0'
+        state: present
+
+    # ─────────────────────────────────────────
     # 1. Prérequis système
     # ─────────────────────────────────────────
     - name: Install required system packages
