@@ -106,6 +106,13 @@ jobs:
         run: rm -f key.pem
 
       - run: echo "🚀 http://${{ needs.terraform.outputs.alb_dns }}"
+    # Dans pipeline.yml → job "ansible" → step "Setup SSH Key"
+
+      - name: Setup SSH Key
+        run: |
+         echo "${{ secrets.EC2_KEY }}" | tr -d '\r' > key.pem
+         chmod 600 key.pem
+         ssh-keygen -y -f key.pem > /dev/null || (echo "❌ Invalid key format" && exit 1)
 
   # ─────────────────────────────────────────
   # JOB 3 — Destroy (manuel)
