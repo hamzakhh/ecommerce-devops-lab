@@ -1,0 +1,140 @@
+---
+- name: Deploy E-Commerce Application
+  hosts: web
+  become: yes
+  vars:
+    app_dir: /opt/ecommerce
+    compose_file: "{{ app_dir }}/docker-compose.yml"
+
+  tasks:
+
+    # ─────────────────────────────────────────
+    # 1. Prérequis système
+    # ─────────────────────────────────────────
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required system packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+          - python3-pip
+        state: present
+
+    # ─────────────────────────────────────────
+    # 2. Installation Docker
+    # ─────────────────────────────────────────
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker Engine
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+        update_cache: yes
+
+    - name: Install Docker Compose plugin
+      apt:
+        name: docker-compose-plugin
+        state: present
+
+    - name: Install docker Python SDK (for Ansible docker modules)
+      pip:
+        name: docker
+        state: present
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add ec2-user to docker group
+      user:
+        name: ec2-user
+        groups: docker
+        append: yes
+
+    # ─────────────────────────────────────────
+    # 3. Préparer le répertoire de l'application
+    # ─────────────────────────────────────────
+    - name: Create application directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: ec2-user
+        group: ec2-user
+        mode: '0755'
+
+    - name: Copy docker-compose.yml to server
+      copy:
+        src: docker-compose.yml
+        dest: "{{ compose_file }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+
+    # ─────────────────────────────────────────
+    # 4. Démarrer les conteneurs
+    # ─────────────────────────────────────────
+    - name: Pull Docker images
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        pull: always
+
+    - name: Start all containers via Docker Compose
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_dir }}"
+        state: present
+
+    # ─────────────────────────────────────────
+    # 5. Vérifications (HealthChecks)
+    # ─────────────────────────────────────────
+    - name: Wait for Nginx to be reachable on port 80
+      wait_for:
+        host: "{{ inventory_hostname }}"
+        port: 80
+        delay: 5
+        timeout: 60
+
+    - name: Check app HTTP response
+      uri:
+        url: "http://{{ inventory_hostname }}/"
+        return_content: yes
+        status_code: 200
+      register: app_response
+      retries: 5
+      delay: 10
+      until: app_response.status == 200
+      
+    - name: Copy Node.js app source to server
+  copy:
+    src: app/
+    dest: "{{ app_dir }}/app/"
+    owner: ec2-user
+    group: ec2-user
+    mode: '0755'
+
+- name: Copy Nginx config to server
+  copy:
+    src: nginx.conf
+    dest: "{{ app_dir }}/nginx.conf"
+    owner: ec2-user
+    group: ec2-user
+    mode: '0644'
