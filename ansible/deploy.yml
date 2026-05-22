@@ -2,6 +2,7 @@
 - name: Deploy E-Commerce Application
   hosts: web
   become: yes
+  gather_facts: no
   vars:
     ansible_python_interpreter: /usr/bin/python3
     app_dir: /opt/ecommerce
@@ -40,6 +41,12 @@
         path: /etc/fstab
         line: '/swapfile swap swap defaults 0 0'
         state: present
+
+    # ─────────────────────────────────────────
+    # 0b. Gather facts APRÈS création du swap
+    # ─────────────────────────────────────────
+    - name: Gather facts
+      setup:
 
     # ─────────────────────────────────────────
     # 1. Prérequis système
@@ -101,6 +108,14 @@
       copy:
         src: docker-compose.yml
         dest: "{{ compose_file }}"
+        owner: ec2-user
+        group: ec2-user
+        mode: '0644'
+
+    - name: Copy nginx.conf to server
+      copy:
+        src: nginx.conf
+        dest: "{{ app_dir }}/nginx.conf"
         owner: ec2-user
         group: ec2-user
         mode: '0644'
