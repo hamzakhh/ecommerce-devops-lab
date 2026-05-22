@@ -47,6 +47,12 @@ jobs:
           ALB=$(terraform output -raw alb_dns_name)
           echo "instance_ips=$IPS" >> $GITHUB_OUTPUT
           echo "alb_dns=$ALB"      >> $GITHUB_OUTPUT
+      - name: Terraform Init
+        run: |
+         terraform init \
+         -backend-config="bucket=ecommerce-tfstate-hamzakhh" \
+         -backend-config="key=prod/terraform.tfstate" \
+         -backend-config="region=us-east-1"
 
   # ─────────────────────────────────────────
   # JOB 2 — Ansible
@@ -132,3 +138,9 @@ jobs:
 
       - run: terraform init
       - run: terraform destroy -auto-approve
+      - name: Terraform Init
+        run: |
+         terraform init \
+         -backend-config="bucket=ecommerce-tfstate-hamzakhh" \
+         -backend-config="key=prod/terraform.tfstate" \
+         -backend-config="region=us-east-1"
