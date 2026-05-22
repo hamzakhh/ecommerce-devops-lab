@@ -8,7 +8,7 @@ on:
 jobs:
 
   # ─────────────────────────────────────────
-  # JOB 1 — Terraform (Infrastructure)
+  # JOB 1 — Terraform
   # ─────────────────────────────────────────
   terraform:
     name: Provision Infrastructure
@@ -18,35 +18,27 @@ jobs:
         working-directory: terraform
     outputs:
       instance_ips: ${{ steps.export.outputs.instance_ips }}
-      alb_dns: ${{ steps.export.outputs.alb_dns }}
+      alb_dns:      ${{ steps.export.outputs.alb_dns }}
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v2
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+      - uses: hashicorp/setup-terraform@v3
         with:
-          terraform_wrapper: false   # ← important pour que output soit parseable
+          terraform_wrapper: false
 
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Validate
-        run: terraform validate
-
-      - name: Terraform Plan
-        run: terraform plan -out=tfplan
-
-      - name: Terraform Apply
-        run: terraform apply -auto-approve tfplan
+      - run: terraform init
+      - run: terraform validate
+      - run: terraform plan -out=tfplan
+      - run: terraform apply -auto-approve tfplan
 
       - name: Export Outputs
         id: export
@@ -57,11 +49,8 @@ jobs:
           echo "instance_ips=$IPS" >> $GITHUB_OUTPUT
           echo "alb_dns=$ALB"      >> $GITHUB_OUTPUT
 
-      - name: Show ALB URL
-        run: echo "🌐 App URL → http://${{ steps.export.outputs.alb_dns }}"
-
   # ─────────────────────────────────────────
-  # JOB 2 — Ansible (Configuration & Deploy)
+  # JOB 2 — Ansible
   # ─────────────────────────────────────────
   ansible:
     name: Configure & Deploy
@@ -69,8 +58,7 @@ jobs:
     needs: terraform
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
       - name: Install Ansible + deps
         run: |
@@ -84,50 +72,49 @@ jobs:
           echo "${{ secrets.EC2_KEY }}" > key.pem
           chmod 600 key.pem
 
-      - name: Generate Inventory dynamically
+      - name: Generate Inventory
         run: |
           echo "[web]" > inventory.ini
           for ip in $(echo "${{ needs.terraform.outputs.instance_ips }}" | tr ',' ' '); do
             echo "$ip ansible_user=ec2-user ansible_ssh_private_key_file=key.pem" >> inventory.ini
           done
-          echo "" >> inventory.ini
-          echo "[web:vars]" >> inventory.ini
+          echo -e "\n[web:vars]" >> inventory.ini
           echo "ansible_ssh_common_args='-o StrictHostKeyChecking=no'" >> inventory.ini
-          cat inventory.ini   # Debug — visible dans les logs GitHub Actions
+          cat inventory.ini
 
-      - name: Wait for EC2 to be ready (SSH)
+      - name: Wait for SSH
         run: |
           for ip in $(echo "${{ needs.terraform.outputs.instance_ips }}" | tr ',' ' '); do
             echo "⏳ Waiting for $ip..."
             timeout 120 bash -c "until nc -zv $ip 22 2>/dev/null; do sleep 5; done"
-            echo "✅ $ip is reachable"
+            echo "✅ $ip ready"
           done
 
       - name: Run Ansible Playbook
-        run: |
-          ansible-playbook -i inventory.ini ansible/deploy.yml -v
+        run: ansible-playbook -i inventory.ini ansible/deploy.yml -v
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
           ANSIBLE_TIMEOUT: "60"
 
-      - name: Print App URL
-        run: |
-          echo "🚀 Deployment complete!"
-          echo "🌐 Open → http://${{ needs.terraform.outputs.alb_dns }}"
+      - name: Cleanup SSH Key        # ← sécurité
+        if: always()
+        run: rm -f key.pem
+
+      - run: echo "🚀 http://${{ needs.terraform.outputs.alb_dns }}"
 
   # ─────────────────────────────────────────
-  # JOB 3 — Destroy (Manuel uniquement)
+  # JOB 3 — Destroy (manuel)
   # ─────────────────────────────────────────
   destroy:
     name: Destroy Infrastructure
     runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
-    needs: []
+    needs: [terraform]   # ← corrigé
     defaults:
       run:
         working-directory: terraform
     environment:
-      name: production    # ← exige une validation manuelle dans GitHub
+      name: production
 
     steps:
       - uses: actions/checkout@v3
@@ -135,17 +122,14 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
 
-      - name: Terraform Init
-        run: terraform init
-
-      - name: Terraform Destroy
-        run: terraform destroy -auto-approve
+      - run: terraform init
+      - run: terraform destroy -auto-approve
